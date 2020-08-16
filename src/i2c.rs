@@ -120,12 +120,13 @@ impl<SCL, SDA> I2c<I2C1, SCL, SDA> {
         mode: Mode,
         clocks: Clocks,
         apb: &mut <I2C1 as RccBus>::Bus,
+        timingr: u32,
     ) -> Self
     where
         SCL: PinScl<I2C1>,
         SDA: PinSda<I2C1>,
     {
-        I2c::_i2c1(i2c, pins, mode, clocks, apb)
+        I2c::_i2c1(i2c, pins, mode, clocks, apb, timingr)
     }
 }
 
@@ -137,13 +138,14 @@ impl<SCL, SDA> BlockingI2c<I2C1, SCL, SDA> {
         mode: Mode,
         clocks: Clocks,
         apb: &mut <I2C1 as RccBus>::Bus,
+        timingr: u32,
         data_timeout_us: u32,
     ) -> Self
     where
         SCL: PinScl<I2C1>,
         SDA: PinSda<I2C1>,
     {
-        BlockingI2c::_i2c1(i2c, pins, mode, clocks, apb, data_timeout_us)
+        BlockingI2c::_i2c1(i2c, pins, mode, clocks, apb, timingr, data_timeout_us)
     }
 }
 
@@ -154,13 +156,14 @@ impl<SCL, SDA> I2c<I2C2, SCL, SDA> {
         pins: (SCL, SDA),
         mode: Mode,
         clocks: Clocks,
+        timingr: u32,
         apb: &mut <I2C2 as RccBus>::Bus,
     ) -> Self
     where
         SCL: PinScl<I2C2>,
         SDA: PinSda<I2C2>,
     {
-        I2c::_i2c2(i2c, pins, mode, clocks, apb)
+        I2c::_i2c2(i2c, pins, mode, clocks, apb, timingr)
     }
 }
 
@@ -172,13 +175,14 @@ impl<SCL, SDA> BlockingI2c<I2C2, SCL, SDA> {
         mode: Mode,
         clocks: Clocks,
         apb: &mut <I2C2 as RccBus>::Bus,
+        timingr: u32,
         data_timeout_us: u32,
     ) -> Self
     where
         SCL: PinScl<I2C2>,
         SDA: PinSda<I2C2>,
     {
-        BlockingI2c::_i2c2(i2c, pins, mode, clocks, apb, data_timeout_us)
+        BlockingI2c::_i2c2(i2c, pins, mode, clocks, apb, timingr, data_timeout_us)
     }
 }
 
@@ -190,12 +194,13 @@ impl<SCL, SDA> I2c<I2C3, SCL, SDA> {
         mode: Mode,
         clocks: Clocks,
         apb: &mut <I2C3 as RccBus>::Bus,
+        timingr: u32,
     ) -> Self
     where
         SCL: PinScl<I2C3>,
         SDA: PinSda<I2C3>,
     {
-        I2c::_i2c3(i2c, pins, mode, clocks, apb)
+        I2c::_i2c3(i2c, pins, mode, clocks, apb, timingr)
     }
 }
 
@@ -207,13 +212,14 @@ impl<SCL, SDA> BlockingI2c<I2C3, SCL, SDA> {
         mode: Mode,
         clocks: Clocks,
         apb: &mut <I2C3 as RccBus>::Bus,
+        timingr: u32,
         data_timeout_us: u32,
     ) -> Self
     where
         SCL: PinScl<I2C3>,
         SDA: PinSda<I2C3>,
     {
-        BlockingI2c::_i2c3(i2c, pins, mode, clocks, apb, data_timeout_us)
+        BlockingI2c::_i2c3(i2c, pins, mode, clocks, apb, timingr, data_timeout_us)
     }
 }
 
@@ -290,7 +296,8 @@ macro_rules! hal {
                     pins: (SCL, SDA),
                     mode: Mode,
                     clocks: Clocks,
-                    apb: &mut <I2C1 as RccBus>::Bus
+                    apb: &mut <I2C1 as RccBus>::Bus,
+                    timingr: u32,
                 ) -> Self {
                     $I2CX::enable(apb);
                     $I2CX::reset(apb);
@@ -300,60 +307,19 @@ macro_rules! hal {
                     assert!(mode.get_frequency().0 <= 400_000);
 
                     let mut i2c = I2c { i2c, pins, mode, pclk };
-                    i2c.init();
+
+                    i2c.init(timingr);
                     i2c
                 }
 
-                /// Initializes I2C as master. Configures I2C_PRESC, I2C_SCLDEL,
-                /// I2C_SDAEL, I2C_SCLH, I2C_SCLL
-                ///
-                /// For now, only standard mode is implemented
-                fn init(&mut self) {
-                    // NOTE : operations are in float for better precision,
-                    // STM32F7 usually have FPU and this runs only at
-                    // initialization so the footprint of such heavy calculation
-                    // occurs only once
-
+                /// Initializes I2C as master. Configures I2C timings.
+                fn init(&mut self, timingr: u32) {
                     // Disable I2C during configuration
                     self.i2c.cr1.write(|w| w.pe().disabled());
-                    let target_freq_mhz: f32 = self.mode.get_frequency().0 as f32 / 1_000_000.0;
-
-                    // by default, APB clock is selected by RCC for I2C
-                    // Set the base clock as pclk1 (all I2C are on APB1)
-                    let base_clk_mhz: f32 = self.pclk as f32 / 1_000_000.0;
-
                     match self.mode {
                         Mode::Standard { .. } => {
-                            // In standard mode, t_{SCL High} = t_{SCL Low}
-                            // Delays
-                            // let sdadel = 2;
-                            // let scldel = 4;
-
-                            let sdadel = 2;
-                            let scldel = 4;
-
-                            // SCL Low time
-                            let scll = (base_clk_mhz / (2.0 * (target_freq_mhz))).ceil();
-                            let scll: u8 = if scll <= 256.0 { scll as u8 - 1 } else { 255 };
-                            let fscll_mhz: f32 = base_clk_mhz / (scll as f32 + 1.0);
-
-                            let sclh: u8 = scll;
-
-                            // Prescaler
-                            let presc = base_clk_mhz / fscll_mhz;
-                            let presc: u8 = if presc <= 16.0 { sclh as u8 - 1 } else { 15 };
-
                             self.i2c.timingr.write(|w|
-                                w.presc()
-                                    .bits(presc)
-                                    .scll()
-                                    .bits(scll)
-                                    .sclh()
-                                    .bits(sclh)
-                                    .sdadel()
-                                    .bits(sdadel)
-                                    .scldel()
-                                    .bits(scldel)
+                                unsafe { w.bits(timingr) }
                             );
                         },
                         _ => unimplemented!(),
@@ -420,9 +386,10 @@ macro_rules! hal {
                     mode: Mode,
                     clocks: Clocks,
                     apb: &mut <$I2CX as RccBus>::Bus,
+                    timingr: u32,
                     data_timeout_us: u32
                 ) -> Self {
-                    blocking_i2c(I2c::$i2cX(i2c, pins, mode, clocks, apb),
+                    blocking_i2c(I2c::$i2cX(i2c, pins, mode, clocks, apb, timingr),
                         clocks, data_timeout_us)
                 }
 
